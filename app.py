@@ -209,17 +209,18 @@ def draw_layout(result):
     for i in range(0, int(result['fabric_length']) + 1, 10):
         ax.axhline(y=i, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
     
-    # Draw pieces
-    import random
-    random.seed(42)
+    # Define a nice color palette for pieces
+    colors = [
+        '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+        '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B195', '#C06C84',
+        '#6C5B7B', '#355C7D', '#F67280', '#C7CEEA', '#99B898',
+        '#E84A5F', '#FF847C', '#FECEAB', '#A8E6CF', '#DCEDC1'
+    ]
     
+    # Draw pieces
     for idx, piece in enumerate(result['pieces']):
-        # Generate color
-        hue = (idx * 137.5) % 360
-        r = int((1 + (hue % 120) / 120) * 127)
-        g = int((1 + ((hue + 120) % 120) / 120) * 127)
-        b = int((1 + ((hue + 240) % 120) / 120) * 127)
-        color = f'#{r:02x}{g:02x}{b:02x}'
+        # Assign color from palette (cycle through if needed)
+        color = colors[idx % len(colors)]
         
         rect = patches.Rectangle(
             (piece['x'], piece['y']),
@@ -228,24 +229,41 @@ def draw_layout(result):
             linewidth=2,
             edgecolor='#2c3e50',
             facecolor=color,
-            alpha=0.7
+            alpha=0.75
         )
         ax.add_patch(rect)
         
-        # Add label
+        # Add label with adaptive font size
         center_x = piece['x'] + piece['width'] / 2
         center_y = piece['y'] + piece['length'] / 2
         
+        # Calculate adaptive font size based on piece dimensions
+        piece_area = piece['width'] * piece['length']
+        min_dimension = min(piece['width'], piece['length'])
+        
+        # Smaller font sizes
+        if min_dimension < 20:
+            fontsize = 5
+        elif min_dimension < 30:
+            fontsize = 6
+        elif min_dimension < 40:
+            fontsize = 7
+        else:
+            fontsize = 8
+        
         label = f"{piece['name']}\n{piece['width']:.0f}×{piece['length']:.0f}"
-        ax.text(
-            center_x, center_y,
-            label,
-            ha='center', va='center',
-            fontsize=9,
-            fontweight='bold',
-            color='white',
-            bbox=dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.6)
-        )
+        
+        # Only show label if piece is large enough
+        if min_dimension >= 15:
+            ax.text(
+                center_x, center_y,
+                label,
+                ha='center', va='center',
+                fontsize=fontsize,
+                fontweight='bold',
+                color='white',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7)
+            )
     
     ax.set_xlim(-5, result['fabric_width'] + 5)
     ax.set_ylim(-5, result['fabric_length'] + 5)
