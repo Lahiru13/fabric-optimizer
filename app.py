@@ -76,8 +76,10 @@ def optimize_fabric(pieces, fabric_width, time_limit):
     for p in pieces:
         for i in range(int(p['quantity'])):
             all_pieces.append({
-                'length': float(p['length']),
-                'width': float(p['width']),
+                'width': float(p['length']),  # Swap: piece length becomes width in layout
+                'length': float(p['width']),  # Swap: piece width becomes length in layout
+                'original_length': float(p['length']),  # Keep original for display
+                'original_width': float(p['width']),
                 'name': f"{p['name']}_{i+1}" if p['quantity'] > 1 else p['name']
             })
     
@@ -86,12 +88,12 @@ def optimize_fabric(pieces, fabric_width, time_limit):
     
     # Check if any piece exceeds fabric width
     for piece in all_pieces:
-        if piece['width'] > fabric_width:
-            st.error(f"❌ Error: {piece['name']} width ({piece['width']}cm) exceeds fabric width ({fabric_width}cm)!")
+        if piece['length'] > fabric_width:
+            st.error(f"❌ Error: {piece['name']} width ({piece['original_width']}cm) exceeds fabric width ({fabric_width}cm)!")
             return None
     
     # Estimate max length
-    total_area = sum(p['length'] * p['width'] for p in all_pieces)
+    total_area = sum(p['width'] * p['length'] for p in all_pieces)
     max_length = int(total_area / fabric_width * 2.0)
     
     # Create model
@@ -116,15 +118,15 @@ def optimize_fabric(pieces, fabric_width, time_limit):
     n = len(all_pieces)
     
     # Constraints
-    # 1. Pieces must fit within fabric width
-    for i, piece in enumerate(all_pieces):
-        width_scaled = int(piece['width'] * SCALE)
-        model.Add(x_vars[i] + width_scaled <= fabric_width_scaled)
-    
-    # 2. Fabric length must accommodate all pieces
+    # 1. Pieces must fit within fabric width (Y-axis)
     for i, piece in enumerate(all_pieces):
         length_scaled = int(piece['length'] * SCALE)
-        model.Add(y_vars[i] + length_scaled <= fabric_length)
+        model.Add(y_vars[i] + length_scaled <= fabric_width_scaled)
+    
+    # 2. Fabric length (X-axis) must accommodate all pieces
+    for i, piece in enumerate(all_pieces):
+        width_scaled = int(piece['width'] * SCALE)
+        model.Add(x_vars[i] + width_scaled <= fabric_length)
     
     # 3. Non-overlapping constraints
     for i in range(n):
@@ -163,13 +165,13 @@ def optimize_fabric(pieces, fabric_width, time_limit):
         for i, piece in enumerate(all_pieces):
             result_pieces.append({
                 'name': piece['name'],
-                'length': piece['length'],
-                'width': piece['width'],
+                'length': piece['original_length'],  # Use original dimensions for display
+                'width': piece['original_width'],
                 'x': solver.Value(x_vars[i]) / SCALE,
                 'y': solver.Value(y_vars[i]) / SCALE
             })
         
-        total_pieces_area = sum(p['length'] * p['width'] for p in all_pieces)
+        total_pieces_area = sum(p['width'] * p['length'] for p in all_pieces)
         efficiency = (total_pieces_area / (optimal_length * fabric_width)) * 100
         
         return {
@@ -191,11 +193,11 @@ def draw_layout(result):
     """Draw the fabric layout using matplotlib"""
     fig, ax = plt.subplots(figsize=(12, 8))
     
-    # Draw fabric background
+    # Draw fabric background - SWAPPED: X is length, Y is width
     fabric_rect = patches.Rectangle(
         (0, 0),
-        result['fabric_width'],
-        result['fabric_length'],
+        result['fabric_length'],  # X-axis = length
+        result['fabric_width'],   # Y-axis = width
         linewidth=2,
         edgecolor='black',
         facecolor='#f8f9fa',
@@ -203,10 +205,10 @@ def draw_layout(result):
     )
     ax.add_patch(fabric_rect)
     
-    # Draw grid
-    for i in range(0, int(result['fabric_width']) + 1, 10):
-        ax.axvline(x=i, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
+    # Draw grid - SWAPPED axes
     for i in range(0, int(result['fabric_length']) + 1, 10):
+        ax.axvline(x=i, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
+    for i in range(0, int(result['fabric_width']) + 1, 10):
         ax.axhline(y=i, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
     
     # Define a nice color palette for pieces
@@ -217,15 +219,15 @@ def draw_layout(result):
         '#E84A5F', '#FF847C', '#FECEAB', '#A8E6CF', '#DCEDC1'
     ]
     
-    # Draw pieces
+    # Draw pieces - SWAPPED: pieces placed with X=length, Y=width
     for idx, piece in enumerate(result['pieces']):
         # Assign color from palette (cycle through if needed)
         color = colors[idx % len(colors)]
         
         rect = patches.Rectangle(
-            (piece['x'], piece['y']),
-            piece['width'],
-            piece['length'],
+            (piece['x'], piece['y']),  # X and Y from optimizer
+            piece['length'],  # X-dimension = length
+            piece['width'],   # Y-dimension = width
             linewidth=2,
             edgecolor='#2c3e50',
             facecolor=color,
@@ -234,12 +236,11 @@ def draw_layout(result):
         ax.add_patch(rect)
         
         # Add label with adaptive font size
-        center_x = piece['x'] + piece['width'] / 2
-        center_y = piece['y'] + piece['length'] / 2
+        center_x = piece['x'] + piece['length'] / 2
+        center_y = piece['y'] + piece['width'] / 2
         
         # Calculate adaptive font size based on piece dimensions
-        piece_area = piece['width'] * piece['length']
-        min_dimension = min(piece['width'], piece['length'])
+        min_dimension = min(piece['length'], piece['width'])
         
         # Smaller font sizes
         if min_dimension < 20:
@@ -251,7 +252,7 @@ def draw_layout(result):
         else:
             fontsize = 8
         
-        label = f"{piece['name']}\n{piece['width']:.0f}×{piece['length']:.0f}"
+        label = f"{piece['name']}\n{piece['length']:.0f}×{piece['width']:.0f}"
         
         # Only show label if piece is large enough
         if min_dimension >= 15:
@@ -265,13 +266,15 @@ def draw_layout(result):
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7)
             )
     
-    ax.set_xlim(-5, result['fabric_width'] + 5)
-    ax.set_ylim(-5, result['fabric_length'] + 5)
+    # SWAPPED axis labels
+    ax.set_xlim(-5, result['fabric_length'] + 5)
+    ax.set_ylim(-5, result['fabric_width'] + 5)
     ax.set_aspect('equal')
-    ax.set_xlabel('Width (cm)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Length (cm)', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Fabric Length (cm)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Fabric Width (cm)', fontsize=12, fontweight='bold')
     ax.set_title(
         f'Optimized Fabric Layout - {result["status"]}\n'
+        f'Length: {result["fabric_length"]:.1f}cm × Width: {result["fabric_width"]:.0f}cm | '
         f'Efficiency: {result["efficiency"]:.1f}% | Waste: {result["waste"]:.1f}%',
         fontsize=14,
         fontweight='bold',
