@@ -1,4 +1,4 @@
-streamlit==1.29.0
-ortools==9.8.3296
-matplotlib==3.8.2
-pandas==2.1.4
+streamlit
+ortools>=9.12.4544
+matplotlib
+pandas
