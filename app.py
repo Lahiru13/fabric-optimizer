@@ -118,12 +118,25 @@ def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
     # Check if any piece exceeds fabric width
     for piece in all_pieces:
         if piece['length'] > fabric_width:
-            st.error(f"❌ Error: {piece['name']} width ({piece['original_width']}cm) exceeds fabric width ({fabric_width}cm)!")
+            st.error(f"❌ Error: {piece['name']} width ({piece['original_width']}cm + {blade_allowance}cm blade allowance) exceeds fabric width ({fabric_width}cm)!")
+            st.info(f"💡 Either increase fabric width or reduce piece width")
             return None
     
-    # Estimate max length
+    # Estimate max length with generous buffer for 31 pieces
     total_area = sum(p['width'] * p['length'] for p in all_pieces)
-    max_length = int(total_area / fabric_width * 2.0)
+    theoretical_min = total_area / fabric_width
+    
+    # For many pieces, use larger buffer
+    if len(all_pieces) > 20:
+        max_length = int(theoretical_min * 5.0)  # Much larger buffer for many pieces
+    else:
+        max_length = int(theoretical_min * 3.0)
+    
+    # Ensure minimum search space
+    if max_length < 500:
+        max_length = max(500, int(theoretical_min * 5.0))
+    
+    st.info(f"🔍 Searching for solution with {len(all_pieces)} pieces. Theoretical minimum: {theoretical_min:.1f}cm, Search up to: {max_length:.1f}cm")
     
     # Create model
     model = cp_model.CpModel()
@@ -184,8 +197,20 @@ def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
     solver.parameters.log_search_progress = False
+    solver.parameters.num_search_workers = 8  # Use parallel search
     
-    status = solver.Solve(model)
+    # Add callback to show progress
+    class ProgressCallback(cp_model.CpSolverSolutionCallback):
+        def __init__(self):
+            cp_model.CpSolverSolutionCallback.__init__(self)
+            self.solution_count = 0
+            
+        def on_solution_callback(self):
+            self.solution_count += 1
+    
+    callback = ProgressCallback()
+    
+    status = solver.Solve(model, callback)
     
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         optimal_length = solver.Value(fabric_length) / SCALE
@@ -215,7 +240,16 @@ def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
             'pieces': result_pieces
         }
     else:
-        return {'success': False, 'error': 'No solution found'}
+        st.warning(f"⚠️ Solver status: {solver.StatusName(status)}")
+        st.info(f"Solutions found during search: {callback.solution_count}")
+        
+        # Provide specific guidance
+        if status == cp_model.INFEASIBLE:
+            return {'success': False, 'error': 'Problem is INFEASIBLE. This means pieces cannot fit. Check: 1) Are any pieces wider than fabric? 2) Is blade allowance too large?'}
+        elif status == cp_model.MODEL_INVALID:
+            return {'success': False, 'error': 'Model is invalid. Please report this issue.'}
+        else:
+            return {'success': False, 'error': f'No solution found within {time_limit} seconds. Try: 1) Increase time to {time_limit * 2}s, 2) The problem may need {time_limit * 3}s for {len(all_pieces)} pieces, 3) Temporarily reduce to 15-20 pieces to test'}
 
 
 def draw_layout(result, unit='cm', blade_allowance=0.2):
@@ -421,10 +455,15 @@ with st.sidebar:
         "Optimization Time (seconds)",
         min_value=10,
         max_value=300,
-        value=60,
+        value=120,  # Increased default from 60 to 120
         step=10,
-        help="Longer time = potentially better results"
+        help="Longer time = potentially better results. For 30+ pieces, use 120-180 seconds"
     )
+    
+    if len(st.session_state.pieces) > 0:
+        total_pieces_count = sum(p['quantity'] for p in st.session_state.pieces)
+        if total_pieces_count > 20:
+            st.info(f"💡 You have {total_pieces_count} pieces. Recommended time: {max(120, total_pieces_count * 3)} seconds")
     
     st.markdown("---")
     
@@ -526,6 +565,26 @@ with st.sidebar:
                     'quantity': piece['quantity']
                 })
             
+            # Pre-flight checks
+            total_pieces = sum(p['quantity'] for p in pieces_in_cm)
+            total_area = sum(p['length'] * p['width'] * p['quantity'] for p in pieces_in_cm)
+            theoretical_min = total_area / fabric_width
+            
+            # Show diagnostic info
+            with st.expander("📊 Pre-Optimization Info", expanded=False):
+                st.write(f"**Total pieces to pack:** {total_pieces}")
+                st.write(f"**Total area needed:** {total_area:.1f} cm²")
+                st.write(f"**Fabric width:** {fabric_width:.1f} cm")
+                st.write(f"**Blade allowance:** {blade_allowance:.2f} cm (adds {blade_allowance*2:.2f} cm to each piece)")
+                st.write(f"**Theoretical minimum length:** {theoretical_min:.1f} cm")
+                st.write(f"**Search space:** Up to {theoretical_min * 3:.1f} cm")
+                
+                # Check for potential issues
+                for piece in pieces_in_cm:
+                    piece_width_with_blade = piece['width'] + blade_allowance
+                    if piece_width_with_blade > fabric_width:
+                        st.error(f"⚠️ {piece['name']}: width {piece['width']:.1f}cm + blade {blade_allowance:.2f}cm = {piece_width_with_blade:.1f}cm exceeds fabric width {fabric_width:.1f}cm")
+            
             with st.spinner("Optimizing... This may take up to " + str(time_limit) + " seconds"):
                 result = optimize_fabric(
                     pieces_in_cm,
@@ -543,6 +602,7 @@ with st.sidebar:
                     st.rerun()
                 elif result:
                     st.error(f"❌ {result.get('error', 'Optimization failed')}")
+                    st.warning("💡 Suggestions:\n- Increase optimization time\n- Reduce blade allowance\n- Check piece dimensions\n- Try with fewer pieces first")
                     st.session_state.solution = None
 
 # Main content
@@ -653,7 +713,7 @@ else:
     # Visualization
     st.subheader("🎨 Fabric Layout")
     
-    fig = draw_layout(result)
+    fig = draw_layout(result, display_unit, blade_allowance)
     st.pyplot(fig)
     
     # Download button for image
