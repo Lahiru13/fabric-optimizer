@@ -34,13 +34,6 @@ st.markdown("""
         color: #6c757d;
         margin-bottom: 2rem;
     }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-    }
     .stButton>button {
         width: 100%;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -97,17 +90,17 @@ def get_unit_label(unit):
     return labels[unit]
 
 
-def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
+def optimize_fabric(pieces, fabric_width, time_limit):
     """Optimize fabric layout using OR-Tools CP-SAT solver"""
     
-    # Expand pieces based on quantity and add blade allowance
+    # Expand pieces based on quantity
     all_pieces = []
     for p in pieces:
         for i in range(int(p['quantity'])):
             all_pieces.append({
-                'width': float(p['length']) + blade_allowance,  # Add blade allowance to both dimensions
-                'length': float(p['width']) + blade_allowance,
-                'original_length': float(p['length']),  # Keep original for display
+                'width': float(p['length']),  # Swap for horizontal layout
+                'length': float(p['width']),
+                'original_length': float(p['length']),
                 'original_width': float(p['width']),
                 'name': f"{p['name']}_{i+1}" if p['quantity'] > 1 else p['name']
             })
@@ -118,25 +111,13 @@ def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
     # Check if any piece exceeds fabric width
     for piece in all_pieces:
         if piece['length'] > fabric_width:
-            st.error(f"❌ Error: {piece['name']} width ({piece['original_width']}cm + {blade_allowance}cm blade allowance) exceeds fabric width ({fabric_width}cm)!")
-            st.info(f"💡 Either increase fabric width or reduce piece width")
+            st.error(f"❌ Error: {piece['name']} width ({piece['original_width']}cm) exceeds fabric width ({fabric_width}cm)!")
             return None
     
-    # Estimate max length with generous buffer for 31 pieces
+    # Estimate max length
     total_area = sum(p['width'] * p['length'] for p in all_pieces)
     theoretical_min = total_area / fabric_width
-    
-    # For many pieces, use larger buffer
-    if len(all_pieces) > 20:
-        max_length = int(theoretical_min * 5.0)  # Much larger buffer for many pieces
-    else:
-        max_length = int(theoretical_min * 3.0)
-    
-    # Ensure minimum search space
-    if max_length < 500:
-        max_length = max(500, int(theoretical_min * 5.0))
-    
-    st.info(f"🔍 Searching for solution with {len(all_pieces)} pieces. Theoretical minimum: {theoretical_min:.1f}cm, Search up to: {max_length:.1f}cm")
+    max_length = int(theoretical_min * 2.0)
     
     # Create model
     model = cp_model.CpModel()
@@ -150,9 +131,9 @@ def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
     y_vars = []
     
     for i, piece in enumerate(all_pieces):
-        x = model.NewIntVar(0, fabric_width_scaled, f"x_{i}")
+        x = model.NewIntVar(0, max_length_scaled, f"x_{i}")
         x_vars.append(x)
-        y = model.NewIntVar(0, max_length_scaled, f"y_{i}")
+        y = model.NewIntVar(0, fabric_width_scaled, f"y_{i}")
         y_vars.append(y)
     
     fabric_length = model.NewIntVar(0, max_length_scaled, 'fabric_length')
@@ -197,20 +178,8 @@ def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
     solver.parameters.log_search_progress = False
-    solver.parameters.num_search_workers = 8  # Use parallel search
     
-    # Add callback to show progress
-    class ProgressCallback(cp_model.CpSolverSolutionCallback):
-        def __init__(self):
-            cp_model.CpSolverSolutionCallback.__init__(self)
-            self.solution_count = 0
-            
-        def on_solution_callback(self):
-            self.solution_count += 1
-    
-    callback = ProgressCallback()
-    
-    status = solver.Solve(model, callback)
+    status = solver.Solve(model)
     
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         optimal_length = solver.Value(fabric_length) / SCALE
@@ -219,7 +188,7 @@ def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
         for i, piece in enumerate(all_pieces):
             result_pieces.append({
                 'name': piece['name'],
-                'length': piece['original_length'],  # Use original dimensions for display
+                'length': piece['original_length'],
                 'width': piece['original_width'],
                 'x': solver.Value(x_vars[i]) / SCALE,
                 'y': solver.Value(y_vars[i]) / SCALE
@@ -240,19 +209,10 @@ def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
             'pieces': result_pieces
         }
     else:
-        st.warning(f"⚠️ Solver status: {solver.StatusName(status)}")
-        st.info(f"Solutions found during search: {callback.solution_count}")
-        
-        # Provide specific guidance
-        if status == cp_model.INFEASIBLE:
-            return {'success': False, 'error': 'Problem is INFEASIBLE. This means pieces cannot fit. Check: 1) Are any pieces wider than fabric? 2) Is blade allowance too large?'}
-        elif status == cp_model.MODEL_INVALID:
-            return {'success': False, 'error': 'Model is invalid. Please report this issue.'}
-        else:
-            return {'success': False, 'error': f'No solution found within {time_limit} seconds. Try: 1) Increase time to {time_limit * 2}s, 2) The problem may need {time_limit * 3}s for {len(all_pieces)} pieces, 3) Temporarily reduce to 15-20 pieces to test'}
+        return {'success': False, 'error': f'No solution found within {time_limit} seconds. Try increasing the time limit.'}
 
 
-def draw_layout(result, unit='cm', blade_allowance=0.2):
+def draw_layout(result, unit='cm'):
     """Draw the fabric layout using matplotlib"""
     
     # Convert values for display
@@ -262,7 +222,7 @@ def draw_layout(result, unit='cm', blade_allowance=0.2):
     
     fig, ax = plt.subplots(figsize=(14, 8))
     
-    # Draw fabric background - SWAPPED: X is length, Y is width
+    # Draw fabric background
     fabric_rect = patches.Rectangle(
         (0, 0),
         fabric_length_display,
@@ -278,36 +238,32 @@ def draw_layout(result, unit='cm', blade_allowance=0.2):
     if unit == 'cm':
         grid_spacing = 10
     elif unit == 'inch':
-        grid_spacing = 2  # Every 2 inches
+        grid_spacing = 2
     elif unit == 'meter':
-        grid_spacing = 0.1  # Every 10 cm
+        grid_spacing = 0.1
     else:  # yard
-        grid_spacing = 0.25  # Every quarter yard
+        grid_spacing = 0.25
     
     # Draw grid with measurements
-    # Vertical lines (X-axis / Length)
     x_max = int(fabric_length_display / grid_spacing) + 1
     for i in range(x_max + 1):
         x_pos = i * grid_spacing
         if x_pos <= fabric_length_display:
             ax.axvline(x=x_pos, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
-            # Add measurement labels
-            if i > 0 and i % 1 == 0:  # Label every grid line
+            if i > 0:
                 ax.text(x_pos, -fabric_width_display * 0.03, f'{int(x_pos) if x_pos == int(x_pos) else x_pos:.1f}',
                        ha='center', va='top', fontsize=8, color='#666')
     
-    # Horizontal lines (Y-axis / Width)
     y_max = int(fabric_width_display / grid_spacing) + 1
     for i in range(y_max + 1):
         y_pos = i * grid_spacing
         if y_pos <= fabric_width_display:
             ax.axhline(y=y_pos, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
-            # Add measurement labels
-            if i > 0 and i % 1 == 0:  # Label every grid line
+            if i > 0:
                 ax.text(-fabric_length_display * 0.015, y_pos, f'{int(y_pos) if y_pos == int(y_pos) else y_pos:.1f}',
                        ha='right', va='center', fontsize=8, color='#666')
     
-    # Define a nice color palette for pieces
+    # Color palette
     colors = [
         '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
         '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B195', '#C06C84',
@@ -317,16 +273,13 @@ def draw_layout(result, unit='cm', blade_allowance=0.2):
     
     # Draw pieces
     for idx, piece in enumerate(result['pieces']):
-        # Assign color from palette
         color = colors[idx % len(colors)]
         
-        # Convert positions and dimensions
         x_display = convert_from_cm(piece['x'], unit)
         y_display = convert_from_cm(piece['y'], unit)
         length_display = convert_from_cm(piece['length'], unit)
         width_display = convert_from_cm(piece['width'], unit)
         
-        # Draw the piece (showing actual cutting area)
         rect = patches.Rectangle(
             (x_display, y_display),
             length_display,
@@ -338,26 +291,10 @@ def draw_layout(result, unit='cm', blade_allowance=0.2):
         )
         ax.add_patch(rect)
         
-        # Draw blade allowance border (dashed line inside)
-        blade_display = convert_from_cm(blade_allowance, unit)
-        if blade_allowance > 0:
-            inner_rect = patches.Rectangle(
-                (x_display + blade_display/2, y_display + blade_display/2),
-                length_display - blade_display,
-                width_display - blade_display,
-                linewidth=1,
-                edgecolor='red',
-                facecolor='none',
-                alpha=0.5,
-                linestyle='--'
-            )
-            ax.add_patch(inner_rect)
-        
-        # Add label
+        # Label
         center_x = x_display + length_display / 2
         center_y = y_display + width_display / 2
         
-        # Calculate adaptive font size
         min_dimension = min(length_display, width_display)
         
         if unit == 'cm':
@@ -370,11 +307,10 @@ def draw_layout(result, unit='cm', blade_allowance=0.2):
             else:
                 fontsize = 8
         else:
-            fontsize = 7  # Default for other units
+            fontsize = 7
         
         label = f"{piece['name']}\n{length_display:.1f}×{width_display:.1f}"
         
-        # Only show label if piece is large enough
         if min_dimension >= (15 if unit == 'cm' else 5):
             ax.text(
                 center_x, center_y,
@@ -386,7 +322,6 @@ def draw_layout(result, unit='cm', blade_allowance=0.2):
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7)
             )
     
-    # Set axis limits with some padding
     ax.set_xlim(-fabric_length_display * 0.05, fabric_length_display * 1.02)
     ax.set_ylim(-fabric_width_display * 0.08, fabric_width_display * 1.02)
     ax.set_aspect('equal')
@@ -432,7 +367,7 @@ with st.sidebar:
         step=0.1,
         help="The width of your fabric roll"
     )
-    fabric_width = convert_to_cm(fabric_width_input, unit)  # Convert to cm for calculation
+    fabric_width = convert_to_cm(fabric_width_input, unit)
     
     fabric_price = st.number_input(
         f"Price per {unit_label} (optional)",
@@ -442,28 +377,14 @@ with st.sidebar:
         help="Cost per unit for cost calculation"
     )
     
-    blade_allowance_input = st.number_input(
-        f"Blade Allowance ({unit_label})",
-        min_value=0.0,
-        value=0.2 if unit == 'cm' else convert_from_cm(0.2, unit),
-        step=0.01,
-        help="Gap between pieces for cutting blade (default: 2mm = 0.2cm)"
-    )
-    blade_allowance = convert_to_cm(blade_allowance_input, unit)  # Convert to cm
-    
     time_limit = st.slider(
         "Optimization Time (seconds)",
         min_value=10,
         max_value=300,
-        value=120,  # Increased default from 60 to 120
+        value=60,
         step=10,
-        help="Longer time = potentially better results. For 30+ pieces, use 120-180 seconds"
+        help="Longer time = potentially better results"
     )
-    
-    if len(st.session_state.pieces) > 0:
-        total_pieces_count = sum(p['quantity'] for p in st.session_state.pieces)
-        if total_pieces_count > 20:
-            st.info(f"💡 You have {total_pieces_count} pieces. Recommended time: {max(120, total_pieces_count * 3)} seconds")
     
     st.markdown("---")
     
@@ -479,7 +400,6 @@ with st.sidebar:
     if input_method == "Manual Entry":
         st.markdown("**Add/Edit Pieces:**")
         
-        # Display existing pieces
         for i, piece in enumerate(st.session_state.pieces):
             with st.expander(f"Piece {i+1}: {piece['name']}", expanded=False):
                 col1, col2 = st.columns(2)
@@ -505,7 +425,7 @@ with st.sidebar:
                         step=0.1,
                         key=f"width_{i}"
                     )
-                    piece['converted'] = True  # Mark as converted to avoid re-conversion
+                    piece['converted'] = True
                 
                 with col2:
                     piece['quantity'] = st.number_input(
@@ -565,67 +485,44 @@ with st.sidebar:
                     'quantity': piece['quantity']
                 })
             
-            # Pre-flight checks
-            total_pieces = sum(p['quantity'] for p in pieces_in_cm)
-            total_area = sum(p['length'] * p['width'] * p['quantity'] for p in pieces_in_cm)
-            theoretical_min = total_area / fabric_width
-            
-            # Show diagnostic info
-            with st.expander("📊 Pre-Optimization Info", expanded=False):
-                st.write(f"**Total pieces to pack:** {total_pieces}")
-                st.write(f"**Total area needed:** {total_area:.1f} cm²")
-                st.write(f"**Fabric width:** {fabric_width:.1f} cm")
-                st.write(f"**Blade allowance:** {blade_allowance:.2f} cm (adds {blade_allowance*2:.2f} cm to each piece)")
-                st.write(f"**Theoretical minimum length:** {theoretical_min:.1f} cm")
-                st.write(f"**Search space:** Up to {theoretical_min * 3:.1f} cm")
-                
-                # Check for potential issues
-                for piece in pieces_in_cm:
-                    piece_width_with_blade = piece['width'] + blade_allowance
-                    if piece_width_with_blade > fabric_width:
-                        st.error(f"⚠️ {piece['name']}: width {piece['width']:.1f}cm + blade {blade_allowance:.2f}cm = {piece_width_with_blade:.1f}cm exceeds fabric width {fabric_width:.1f}cm")
-            
             with st.spinner("Optimizing... This may take up to " + str(time_limit) + " seconds"):
                 result = optimize_fabric(
                     pieces_in_cm,
                     fabric_width,
-                    time_limit,
-                    blade_allowance
+                    time_limit
                 )
                 
                 if result and result['success']:
                     st.session_state.solution = result
                     st.session_state.solution['fabric_price'] = fabric_price
-                    st.session_state.solution['blade_allowance'] = blade_allowance
                     st.session_state.solution['unit'] = unit
                     st.success("✅ Optimization complete!")
                     st.rerun()
                 elif result:
                     st.error(f"❌ {result.get('error', 'Optimization failed')}")
-                    st.warning("💡 Suggestions:\n- Increase optimization time\n- Reduce blade allowance\n- Check piece dimensions\n- Try with fewer pieces first")
                     st.session_state.solution = None
 
 # Main content
 if st.session_state.solution is None:
-    # Welcome screen
     st.info("""
     ### 👋 Welcome to Fabric Cutting Optimizer!
     
     **How to use:**
-    1. Configure fabric width and price in the sidebar
-    2. Add your pieces (length, width, quantity)
-    3. Click "Optimize Layout"
-    4. Get the most efficient cutting plan!
+    1. Select your measurement unit (cm/inch/meter/yard)
+    2. Configure fabric width and price in the sidebar
+    3. Add your pieces (length, width, quantity)
+    4. Click "Optimize Layout"
+    5. Get the most efficient cutting plan!
     
     **Features:**
     - ✅ Optimal fabric layout using Google OR-Tools
+    - ✅ Multiple unit support (cm, inches, meters, yards)
     - ✅ Minimize waste and maximize efficiency
-    - ✅ Visual layout with exact coordinates
+    - ✅ Visual layout with measurements
     - ✅ Cost calculation
     - ✅ Export cutting plan
     """)
     
-    # Show input summary
     if len(st.session_state.pieces) > 0:
         st.subheader("📋 Current Pieces")
         
@@ -647,14 +544,11 @@ else:
     # Display results
     result = st.session_state.solution
     display_unit = result.get('unit', 'cm')
-    blade_allowance = result.get('blade_allowance', 0.2)
     unit_label = get_unit_label(display_unit)
     
-    # Convert values for display
     fabric_length_display = convert_from_cm(result['fabric_length'], display_unit)
     fabric_width_display = convert_from_cm(result['fabric_width'], display_unit)
     
-    # Metrics
     st.subheader("📊 Results Summary")
     
     col1, col2, col3, col4 = st.columns(4)
@@ -697,26 +591,21 @@ else:
                 help="Optimization status"
             )
     
-    # Additional details
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.info(f"**Fabric Width:** {fabric_width_display:.1f} {unit_label}")
     with col2:
         st.info(f"**Total Area:** {(fabric_length_display * fabric_width_display):.1f} {unit_label}²")
     with col3:
-        st.info(f"**Blade Allowance:** {convert_from_cm(blade_allowance, display_unit):.2f} {unit_label}")
-    with col4:
         st.info(f"**Solve Time:** {result['solve_time']:.2f} seconds")
     
     st.markdown("---")
     
-    # Visualization
     st.subheader("🎨 Fabric Layout")
     
-    fig = draw_layout(result, display_unit, blade_allowance)
+    fig = draw_layout(result, display_unit)
     st.pyplot(fig)
     
-    # Download button for image
     buf = BytesIO()
     fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
     buf.seek(0)
@@ -731,17 +620,21 @@ else:
     
     st.markdown("---")
     
-    # Cutting plan
     st.subheader("✂️ Cutting Plan")
     
     df_cutting = pd.DataFrame(result['pieces'])
     df_cutting = df_cutting[['name', 'width', 'length', 'x', 'y']]
-    df_cutting.columns = ['Piece Name', 'Width (cm)', 'Length (cm)', 'X Position', 'Y Position']
+    df_cutting.columns = ['Piece Name', f'Width ({unit_label})', f'Length ({unit_label})', 'X Position', 'Y Position']
+    
+    # Convert to display unit
+    for col in [f'Width ({unit_label})', f'Length ({unit_label})', 'X Position', 'Y Position']:
+        if col in df_cutting.columns:
+            df_cutting[col] = df_cutting[col].apply(lambda x: convert_from_cm(x, display_unit))
+    
     df_cutting.index = range(1, len(df_cutting) + 1)
     
     st.dataframe(df_cutting, use_container_width=True)
     
-    # Download CSV
     csv = df_cutting.to_csv(index=True)
     st.download_button(
         label="📥 Download Cutting Plan (CSV)",
@@ -751,14 +644,13 @@ else:
         use_container_width=True
     )
     
-    # Instructions
     with st.expander("📋 How to Use This Cutting Plan"):
-        st.markdown("""
+        st.markdown(f"""
         **Instructions for cutting:**
         
         1. Mark your fabric with X=0 (left edge) and Y=0 (bottom edge) as reference points
-        2. Measure and mark each piece's position from these reference points
-        3. Use the Width and Length columns to mark the piece dimensions
+        2. All measurements are in {unit_label}
+        3. Measure and mark each piece's position from these reference points
         4. Cut pieces according to the marked positions
         
         **Tips:**
