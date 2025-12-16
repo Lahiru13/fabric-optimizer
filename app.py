@@ -67,17 +67,46 @@ if 'pieces' not in st.session_state:
 if 'solution' not in st.session_state:
     st.session_state.solution = None
 
+if 'unit' not in st.session_state:
+    st.session_state.unit = 'cm'
 
-def optimize_fabric(pieces, fabric_width, time_limit):
+# Unit conversion factors (all to cm)
+UNIT_CONVERSIONS = {
+    'cm': 1.0,
+    'inch': 2.54,
+    'meter': 100.0,
+    'yard': 91.44
+}
+
+def convert_to_cm(value, unit):
+    """Convert value from given unit to cm"""
+    return value * UNIT_CONVERSIONS[unit]
+
+def convert_from_cm(value, unit):
+    """Convert value from cm to given unit"""
+    return value / UNIT_CONVERSIONS[unit]
+
+def get_unit_label(unit):
+    """Get display label for unit"""
+    labels = {
+        'cm': 'cm',
+        'inch': 'inches',
+        'meter': 'meters',
+        'yard': 'yards'
+    }
+    return labels[unit]
+
+
+def optimize_fabric(pieces, fabric_width, time_limit, blade_allowance=0.2):
     """Optimize fabric layout using OR-Tools CP-SAT solver"""
     
-    # Expand pieces based on quantity
+    # Expand pieces based on quantity and add blade allowance
     all_pieces = []
     for p in pieces:
         for i in range(int(p['quantity'])):
             all_pieces.append({
-                'width': float(p['length']),  # Swap: piece length becomes width in layout
-                'length': float(p['width']),  # Swap: piece width becomes length in layout
+                'width': float(p['length']) + blade_allowance,  # Add blade allowance to both dimensions
+                'length': float(p['width']) + blade_allowance,
                 'original_length': float(p['length']),  # Keep original for display
                 'original_width': float(p['width']),
                 'name': f"{p['name']}_{i+1}" if p['quantity'] > 1 else p['name']
@@ -189,15 +218,21 @@ def optimize_fabric(pieces, fabric_width, time_limit):
         return {'success': False, 'error': 'No solution found'}
 
 
-def draw_layout(result):
+def draw_layout(result, unit='cm', blade_allowance=0.2):
     """Draw the fabric layout using matplotlib"""
-    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Convert values for display
+    fabric_length_display = convert_from_cm(result['fabric_length'], unit)
+    fabric_width_display = convert_from_cm(result['fabric_width'], unit)
+    unit_label = get_unit_label(unit)
+    
+    fig, ax = plt.subplots(figsize=(14, 8))
     
     # Draw fabric background - SWAPPED: X is length, Y is width
     fabric_rect = patches.Rectangle(
         (0, 0),
-        result['fabric_length'],  # X-axis = length
-        result['fabric_width'],   # Y-axis = width
+        fabric_length_display,
+        fabric_width_display,
         linewidth=2,
         edgecolor='black',
         facecolor='#f8f9fa',
@@ -205,11 +240,38 @@ def draw_layout(result):
     )
     ax.add_patch(fabric_rect)
     
-    # Draw grid - SWAPPED axes
-    for i in range(0, int(result['fabric_length']) + 1, 10):
-        ax.axvline(x=i, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
-    for i in range(0, int(result['fabric_width']) + 1, 10):
-        ax.axhline(y=i, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
+    # Calculate grid spacing based on unit
+    if unit == 'cm':
+        grid_spacing = 10
+    elif unit == 'inch':
+        grid_spacing = 2  # Every 2 inches
+    elif unit == 'meter':
+        grid_spacing = 0.1  # Every 10 cm
+    else:  # yard
+        grid_spacing = 0.25  # Every quarter yard
+    
+    # Draw grid with measurements
+    # Vertical lines (X-axis / Length)
+    x_max = int(fabric_length_display / grid_spacing) + 1
+    for i in range(x_max + 1):
+        x_pos = i * grid_spacing
+        if x_pos <= fabric_length_display:
+            ax.axvline(x=x_pos, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
+            # Add measurement labels
+            if i > 0 and i % 1 == 0:  # Label every grid line
+                ax.text(x_pos, -fabric_width_display * 0.03, f'{int(x_pos) if x_pos == int(x_pos) else x_pos:.1f}',
+                       ha='center', va='top', fontsize=8, color='#666')
+    
+    # Horizontal lines (Y-axis / Width)
+    y_max = int(fabric_width_display / grid_spacing) + 1
+    for i in range(y_max + 1):
+        y_pos = i * grid_spacing
+        if y_pos <= fabric_width_display:
+            ax.axhline(y=y_pos, color='gray', linewidth=0.3, alpha=0.5, linestyle='--')
+            # Add measurement labels
+            if i > 0 and i % 1 == 0:  # Label every grid line
+                ax.text(-fabric_length_display * 0.015, y_pos, f'{int(y_pos) if y_pos == int(y_pos) else y_pos:.1f}',
+                       ha='right', va='center', fontsize=8, color='#666')
     
     # Define a nice color palette for pieces
     colors = [
@@ -219,15 +281,22 @@ def draw_layout(result):
         '#E84A5F', '#FF847C', '#FECEAB', '#A8E6CF', '#DCEDC1'
     ]
     
-    # Draw pieces - SWAPPED: pieces placed with X=length, Y=width
+    # Draw pieces
     for idx, piece in enumerate(result['pieces']):
-        # Assign color from palette (cycle through if needed)
+        # Assign color from palette
         color = colors[idx % len(colors)]
         
+        # Convert positions and dimensions
+        x_display = convert_from_cm(piece['x'], unit)
+        y_display = convert_from_cm(piece['y'], unit)
+        length_display = convert_from_cm(piece['length'], unit)
+        width_display = convert_from_cm(piece['width'], unit)
+        
+        # Draw the piece (showing actual cutting area)
         rect = patches.Rectangle(
-            (piece['x'], piece['y']),  # X and Y from optimizer
-            piece['length'],  # X-dimension = length
-            piece['width'],   # Y-dimension = width
+            (x_display, y_display),
+            length_display,
+            width_display,
             linewidth=2,
             edgecolor='#2c3e50',
             facecolor=color,
@@ -235,27 +304,44 @@ def draw_layout(result):
         )
         ax.add_patch(rect)
         
-        # Add label with adaptive font size
-        center_x = piece['x'] + piece['length'] / 2
-        center_y = piece['y'] + piece['width'] / 2
+        # Draw blade allowance border (dashed line inside)
+        blade_display = convert_from_cm(blade_allowance, unit)
+        if blade_allowance > 0:
+            inner_rect = patches.Rectangle(
+                (x_display + blade_display/2, y_display + blade_display/2),
+                length_display - blade_display,
+                width_display - blade_display,
+                linewidth=1,
+                edgecolor='red',
+                facecolor='none',
+                alpha=0.5,
+                linestyle='--'
+            )
+            ax.add_patch(inner_rect)
         
-        # Calculate adaptive font size based on piece dimensions
-        min_dimension = min(piece['length'], piece['width'])
+        # Add label
+        center_x = x_display + length_display / 2
+        center_y = y_display + width_display / 2
         
-        # Smaller font sizes
-        if min_dimension < 20:
-            fontsize = 5
-        elif min_dimension < 30:
-            fontsize = 6
-        elif min_dimension < 40:
-            fontsize = 7
+        # Calculate adaptive font size
+        min_dimension = min(length_display, width_display)
+        
+        if unit == 'cm':
+            if min_dimension < 20:
+                fontsize = 5
+            elif min_dimension < 30:
+                fontsize = 6
+            elif min_dimension < 40:
+                fontsize = 7
+            else:
+                fontsize = 8
         else:
-            fontsize = 8
+            fontsize = 7  # Default for other units
         
-        label = f"{piece['name']}\n{piece['length']:.0f}×{piece['width']:.0f}"
+        label = f"{piece['name']}\n{length_display:.1f}×{width_display:.1f}"
         
         # Only show label if piece is large enough
-        if min_dimension >= 15:
+        if min_dimension >= (15 if unit == 'cm' else 5):
             ax.text(
                 center_x, center_y,
                 label,
@@ -266,15 +352,15 @@ def draw_layout(result):
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7)
             )
     
-    # SWAPPED axis labels
-    ax.set_xlim(-5, result['fabric_length'] + 5)
-    ax.set_ylim(-5, result['fabric_width'] + 5)
+    # Set axis limits with some padding
+    ax.set_xlim(-fabric_length_display * 0.05, fabric_length_display * 1.02)
+    ax.set_ylim(-fabric_width_display * 0.08, fabric_width_display * 1.02)
     ax.set_aspect('equal')
-    ax.set_xlabel('Fabric Length (cm)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Fabric Width (cm)', fontsize=12, fontweight='bold')
+    ax.set_xlabel(f'Fabric Length ({unit_label})', fontsize=12, fontweight='bold')
+    ax.set_ylabel(f'Fabric Width ({unit_label})', fontsize=12, fontweight='bold')
     ax.set_title(
         f'Optimized Fabric Layout - {result["status"]}\n'
-        f'Length: {result["fabric_length"]:.1f}cm × Width: {result["fabric_width"]:.0f}cm | '
+        f'Length: {fabric_length_display:.2f}{unit_label} × Width: {fabric_width_display:.1f}{unit_label} | '
         f'Efficiency: {result["efficiency"]:.1f}% | Waste: {result["waste"]:.1f}%',
         fontsize=14,
         fontweight='bold',
@@ -294,21 +380,42 @@ st.markdown('<div class="sub-header">Minimize waste, maximize efficiency with op
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    fabric_width = st.number_input(
-        "Fabric Width (cm)",
-        min_value=1.0,
-        value=150.0,
+    # Unit selection
+    unit = st.selectbox(
+        "Measurement Unit",
+        options=['cm', 'inch', 'meter', 'yard'],
+        index=0,
+        format_func=lambda x: {'cm': 'Centimeters (cm)', 'inch': 'Inches', 'meter': 'Meters', 'yard': 'Yards'}[x],
+        help="Choose your preferred measurement unit"
+    )
+    st.session_state.unit = unit
+    unit_label = get_unit_label(unit)
+    
+    fabric_width_input = st.number_input(
+        f"Fabric Width ({unit_label})",
+        min_value=0.1,
+        value=150.0 if unit == 'cm' else convert_from_cm(150.0, unit),
         step=0.1,
         help="The width of your fabric roll"
     )
+    fabric_width = convert_to_cm(fabric_width_input, unit)  # Convert to cm for calculation
     
     fabric_price = st.number_input(
-        "Price per Meter (optional)",
+        f"Price per {unit_label} (optional)",
         min_value=0.0,
-        value=10.0,
+        value=10.0 if unit in ['cm', 'meter'] else 5.0,
         step=0.01,
-        help="Cost per meter for cost calculation"
+        help="Cost per unit for cost calculation"
     )
+    
+    blade_allowance_input = st.number_input(
+        f"Blade Allowance ({unit_label})",
+        min_value=0.0,
+        value=0.2 if unit == 'cm' else convert_from_cm(0.2, unit),
+        step=0.01,
+        help="Gap between pieces for cutting blade (default: 2mm = 0.2cm)"
+    )
+    blade_allowance = convert_to_cm(blade_allowance_input, unit)  # Convert to cm
     
     time_limit = st.slider(
         "Optimization Time (seconds)",
@@ -346,19 +453,20 @@ with st.sidebar:
                 
                 with col1:
                     piece['length'] = st.number_input(
-                        "Length (cm)",
+                        f"Length ({unit_label})",
                         min_value=0.1,
-                        value=float(piece['length']),
+                        value=convert_from_cm(float(piece['length']), unit) if 'converted' not in piece else float(piece['length']),
                         step=0.1,
                         key=f"length_{i}"
                     )
                     piece['width'] = st.number_input(
-                        "Width (cm)",
+                        f"Width ({unit_label})",
                         min_value=0.1,
-                        value=float(piece['width']),
+                        value=convert_from_cm(float(piece['width']), unit) if 'converted' not in piece else float(piece['width']),
                         step=0.1,
                         key=f"width_{i}"
                     )
+                    piece['converted'] = True  # Mark as converted to avoid re-conversion
                 
                 with col2:
                     piece['quantity'] = st.number_input(
@@ -408,16 +516,29 @@ with st.sidebar:
         if len(st.session_state.pieces) == 0:
             st.error("❌ Please add at least one piece!")
         else:
+            # Convert all piece dimensions to cm for optimization
+            pieces_in_cm = []
+            for piece in st.session_state.pieces:
+                pieces_in_cm.append({
+                    'name': piece['name'],
+                    'length': convert_to_cm(float(piece['length']), unit),
+                    'width': convert_to_cm(float(piece['width']), unit),
+                    'quantity': piece['quantity']
+                })
+            
             with st.spinner("Optimizing... This may take up to " + str(time_limit) + " seconds"):
                 result = optimize_fabric(
-                    st.session_state.pieces,
+                    pieces_in_cm,
                     fabric_width,
-                    time_limit
+                    time_limit,
+                    blade_allowance
                 )
                 
                 if result and result['success']:
                     st.session_state.solution = result
                     st.session_state.solution['fabric_price'] = fabric_price
+                    st.session_state.solution['blade_allowance'] = blade_allowance
+                    st.session_state.solution['unit'] = unit
                     st.success("✅ Optimization complete!")
                     st.rerun()
                 elif result:
@@ -465,6 +586,13 @@ if st.session_state.solution is None:
 else:
     # Display results
     result = st.session_state.solution
+    display_unit = result.get('unit', 'cm')
+    blade_allowance = result.get('blade_allowance', 0.2)
+    unit_label = get_unit_label(display_unit)
+    
+    # Convert values for display
+    fabric_length_display = convert_from_cm(result['fabric_length'], display_unit)
+    fabric_width_display = convert_from_cm(result['fabric_width'], display_unit)
     
     # Metrics
     st.subheader("📊 Results Summary")
@@ -473,8 +601,8 @@ else:
     
     with col1:
         st.metric(
-            "Fabric Length",
-            f"{result['fabric_length']:.2f} cm",
+            f"Fabric Length",
+            f"{fabric_length_display:.2f} {unit_label}",
             help="Total fabric length needed"
         )
     
@@ -496,7 +624,7 @@ else:
     
     with col4:
         if result['fabric_price'] > 0:
-            total_cost = (result['fabric_length'] / 100) * result['fabric_price']
+            total_cost = fabric_length_display * result['fabric_price']
             st.metric(
                 "Total Cost",
                 f"${total_cost:.2f}",
@@ -510,12 +638,14 @@ else:
             )
     
     # Additional details
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.info(f"**Fabric Width:** {result['fabric_width']:.1f} cm")
+        st.info(f"**Fabric Width:** {fabric_width_display:.1f} {unit_label}")
     with col2:
-        st.info(f"**Total Area:** {result['fabric_length'] * result['fabric_width']:.1f} cm²")
+        st.info(f"**Total Area:** {(fabric_length_display * fabric_width_display):.1f} {unit_label}²")
     with col3:
+        st.info(f"**Blade Allowance:** {convert_from_cm(blade_allowance, display_unit):.2f} {unit_label}")
+    with col4:
         st.info(f"**Solve Time:** {result['solve_time']:.2f} seconds")
     
     st.markdown("---")
